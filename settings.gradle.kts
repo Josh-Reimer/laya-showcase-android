@@ -15,3 +15,4 @@ dependencyResolutionManagement {
 
 rootProject.name = "laya-showcase"
 include(":app")
+include(":laya-java")

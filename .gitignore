@@ -9,3 +9,8 @@ captures/
 .externalNativeBuild/
 .cxx/
 *.apk.idsig
+
+# GitHub rejects any git-pushed file over 100MB; the exported ONNX graph (~1.7GB) can only ship
+# as a release asset or be regenerated locally (see README), never committed.
+app/src/main/assets/laya-model/*.onnx
+app/src/main/assets/laya-model/*.onnx.data

@@ -6,23 +6,21 @@ import androidx.activity.compose.setContent
 import androidx.activity.viewModels
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.unit.dp
 import com.layaplayground.showcase.data.Presets
 import com.layaplayground.showcase.data.QuestionDraft
 import com.layaplayground.showcase.data.QuestionType
-import com.layaplayground.showcase.net.LayaAnswer
-import com.layaplayground.showcase.net.LayaResult
+import com.layaplayground.showcase.engine.LayaAnswer
+import com.layaplayground.showcase.engine.LayaResult
 import com.layaplayground.showcase.ui.theme.LayaShowcaseTheme
 import kotlin.math.roundToInt
 
@@ -38,7 +36,6 @@ class MainActivity : ComponentActivity() {
                     val state by viewModel.uiState.collectAsState()
                     LayaScreen(
                         state = state,
-                        onServerUrlChange = viewModel::onServerUrlChange,
                         onStateBodyChange = viewModel::onStateBodyChange,
                         onPresetSelected = viewModel::applyPreset,
                         onRun = viewModel::runPrediction,
@@ -54,13 +51,12 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun LayaScreen(
     state: UiState,
-    onServerUrlChange: (String) -> Unit,
     onStateBodyChange: (String) -> Unit,
     onPresetSelected: (Int) -> Unit,
     onRun: () -> Unit,
     onDismissError: () -> Unit
 ) {
-    var showSettings by remember { mutableStateOf(false) }
+    var showInfo by remember { mutableStateOf(false) }
 
     Scaffold(
         topBar = {
@@ -69,14 +65,14 @@ fun LayaScreen(
                     Column {
                         Text("Laya Showcase", fontWeight = FontWeight.Bold)
                         Text(
-                            "Open-source typed decisions — the open alternative to Jev",
+                            "Open-source typed decisions, fully on-device — the open alternative to Jev",
                             style = MaterialTheme.typography.labelSmall
                         )
                     }
                 },
                 actions = {
-                    IconButton(onClick = { showSettings = true }) {
-                        Icon(Icons.Filled.Settings, contentDescription = "Server settings")
+                    IconButton(onClick = { showInfo = true }) {
+                        Icon(Icons.Filled.Info, contentDescription = "About this model")
                     }
                 }
             )
@@ -90,6 +86,10 @@ fun LayaScreen(
                 .padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(16.dp)
         ) {
+            if (state.isEnginePreparing) {
+                EnginePreparingCard()
+            }
+
             PresetPicker(selected = state.selectedPreset, onPresetSelected = onPresetSelected)
 
             OutlinedTextField(
@@ -105,7 +105,7 @@ fun LayaScreen(
 
             Button(
                 onClick = onRun,
-                enabled = !state.isLoading,
+                enabled = !state.isLoading && !state.isEnginePreparing,
                 modifier = Modifier.fillMaxWidth()
             ) {
                 if (state.isLoading) {
@@ -131,12 +131,25 @@ fun LayaScreen(
         }
     }
 
-    if (showSettings) {
-        ServerSettingsSheet(
-            currentUrl = state.serverUrl,
-            onUrlChange = onServerUrlChange,
-            onDismiss = { showSettings = false }
-        )
+    if (showInfo) {
+        ModelInfoSheet(onDismiss = { showInfo = false })
+    }
+}
+
+@Composable
+fun EnginePreparingCard() {
+    Card {
+        Row(
+            modifier = Modifier.padding(12.dp).fillMaxWidth(),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+            Spacer(Modifier.width(12.dp))
+            Text(
+                "Loading the on-device model (first launch extracts it from the app package)…",
+                style = MaterialTheme.typography.bodySmall
+            )
+        }
     }
 }
 
@@ -221,15 +234,9 @@ fun ResultCard(result: LayaResult) {
                 Text("Laya decided", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
                 Spacer(Modifier.weight(1f))
                 Text(
-                    "${result.clientLatencyMs} ms round-trip",
+                    "${result.inferenceLatencyMs} ms on-device",
                     style = MaterialTheme.typography.labelSmall,
                     color = MaterialTheme.colorScheme.secondary
-                )
-            }
-            result.routingModel?.takeIf { it.isNotBlank() }?.let {
-                Text(
-                    "Routed to checkpoint: $it" + (result.routingReason?.let { r -> " ($r)" } ?: ""),
-                    style = MaterialTheme.typography.labelSmall
                 )
             }
             result.answers.forEach { (id, answer) ->
@@ -253,9 +260,12 @@ fun AnswerRow(id: String, answer: LayaAnswer) {
             }
             is LayaAnswer.Score -> {
                 Text("→ score ${"%.2f".format(answer.value.score)}  (confidence ${pct(answer.value.confidence)})")
-                answer.value.probabilities.forEachIndexed { index, p ->
-                    ProbabilityBar(label = "level $index", probability = p)
-                }
+                answer.value.probabilities.entries
+                    .sortedBy { it.key.toIntOrNull() ?: 0 }
+                    .forEach { (levelIndex, p) ->
+                        val label = answer.value.legend[levelIndex] ?: "level $levelIndex"
+                        ProbabilityBar(label = label, probability = p)
+                    }
             }
             is LayaAnswer.Noul -> {
                 Text("→ P(true) = ${pct(answer.value.probabilityTrue)}")
@@ -268,7 +278,12 @@ fun AnswerRow(id: String, answer: LayaAnswer) {
 @Composable
 fun ProbabilityBar(label: String, probability: Double) {
     Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.padding(vertical = 2.dp)) {
-        Text(label, modifier = Modifier.width(80.dp), style = MaterialTheme.typography.labelSmall)
+        Text(
+            label,
+            modifier = Modifier.widthIn(min = 80.dp, max = 140.dp),
+            style = MaterialTheme.typography.labelSmall,
+            maxLines = 1
+        )
         LinearProgressIndicator(
             progress = { probability.toFloat().coerceIn(0f, 1f) },
             modifier = Modifier.weight(1f).height(8.dp)
@@ -285,27 +300,16 @@ private fun pct(value: Double): String {
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun ServerSettingsSheet(
-    currentUrl: String,
-    onUrlChange: (String) -> Unit,
-    onDismiss: () -> Unit
-) {
+fun ModelInfoSheet(onDismiss: () -> Unit) {
     ModalBottomSheet(onDismissRequest = onDismiss) {
         Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
-            Text("Laya server", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
+            Text("Running fully on-device", style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.Bold)
             Text(
-                "This app is a client for a self-hosted `laya-serve` instance. " +
-                    "Run `pip install \"laya[serve]\" && laya-serve` on your machine, then point this at it. " +
-                    "Use 10.0.2.2 to reach your host machine from the Android emulator.",
+                "This app bundles Laya's English checkpoint (ModernBERT-large, 421M params) as an " +
+                    "ONNX graph inside the APK. Every prediction runs locally through ONNX Runtime " +
+                    "and laya-java (a vendored, pure-Java port of the reference tokenizer and " +
+                    "decision head) — nothing is sent over the network.",
                 style = MaterialTheme.typography.bodySmall
-            )
-            OutlinedTextField(
-                value = currentUrl,
-                onValueChange = onUrlChange,
-                label = { Text("Base URL") },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                modifier = Modifier.fillMaxWidth()
             )
             Button(onClick = onDismiss, modifier = Modifier.fillMaxWidth()) {
                 Text("Done")
